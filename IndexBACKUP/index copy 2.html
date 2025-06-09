@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Live TV Captions</title>
+  <!-- Add a base64 favicon to suppress 404 errors -->
   <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAmElEQVRYR+2WQQqAMAwExyT+/zO7gQ7I4NhbIAbqE/g4wMNAYgBKBZTybgAA7r5UACgVUMq7AQC4+1IBoFRAKe8GAODuSwWAUgGlvBsAgLsvFQCKBVTybgAA7r5UACgVUMq7AQC4+1IBoFRAKe8GAODuSwWAUgGlvBsAgLsvFQCKBVTybgAA7r5UACgVUMq7AQC4+1IBoFRANc0B4E3h1rUAAAAASUVORK5CYII=">
   <style>
     * {
@@ -46,10 +47,10 @@
       font-size: 14px;
       cursor: pointer;
     }
-    #deviceSelect, #languageSelect {
+    #deviceSelect {
       background: #444;
       color: #fff;
-      min-width: 150px;
+      min-width: 200px;
     }
     button {
       background: #007bff;
@@ -76,30 +77,19 @@
       line-height: 1.6;
       display: flex;
       flex-direction: column;
-      align-items: flex-start;
+      justify-content: flex-end;
       min-height: 200px;
-      scroll-behavior: smooth;
     }
-    #transcript .line {
-      display: flex;
-      flex-wrap: wrap;
-      margin-bottom: 4px;
-    }
-    #transcript .word {
-      display: inline-block;
-      margin-right: 8px;
+    #transcript p {
+      margin: 2px 0;
       opacity: 0.9;
       transition: opacity 0.5s;
-      cursor: pointer;
     }
-    #transcript .interim {
+    #transcript p.interim {
       font-style: italic;
       opacity: 0.7;
     }
-    #transcript .low-confidence {
-      color: #ffcc00;
-    }
-    #transcript .fade-out {
+    #transcript p.fade-out {
       opacity: 0;
     }
     @media (max-width: 600px) {
@@ -111,7 +101,7 @@
         flex-direction: column;
         width: 100%;
       }
-      #deviceSelect, #languageSelect, button {
+      #deviceSelect, button {
         width: 100%;
       }
       #transcript {
@@ -127,26 +117,18 @@
       <select id="deviceSelect">
         <option value="">Select Microphone</option>
       </select>
-      <select id="languageSelect">
-        <option value="en-US">English (US)</option>
-        <option value="en-GB">English (UK)</option>
-        <option value="en-AU">English (Australia)</option>
-        <option value="en-IN">English (India)</option>
-        <option value="en-CA">English (Canada)</option>
-      </select>
       <button id="startBtn">Start</button>
       <button id="stopBtn" disabled>Stop</button>
       <div id="status">Initializing...</div>
     </div>
   </div>
   <div id="transcript">
-    <div class="line"><span class="word">Select a microphone and click Start.</span></div>
+    <p>Select a microphone and click Start.</p>
   </div>
 
   <script>
     (function() {
       const deviceSelect = document.getElementById('deviceSelect');
-      const languageSelect = document.getElementById('languageSelect');
       const startBtn = document.getElementById('startBtn');
       const stopBtn = document.getElementById('stopBtn');
       const transcriptDiv = document.getElementById('transcript');
@@ -154,24 +136,15 @@
       let recognition = null;
       let stream = null;
       let isTranscribing = false;
-      let isRecognitionActive = false;
-      let lastWords = [];
-      let userCorrections = JSON.parse(localStorage.getItem('corrections')) || {};
- const wordDelay = 100; // Faster delay for real-time feel
-      const maxLineLength = 64; // Character limit per line
-      const maxWordsPerBatch = 5; // Max words to display per batch
-      const profanityList = ['ass', 'bitch', 'fuck', 'shit', 'damn', 'cunt', 'dick', 'pussy', 'whore', 'fag', 'slut', 'cock'];
-      const domainWords = [
-        'broadcast', 'anchor', 'telecast', 'newsroom', 'reporter',
-        'correspondent', 'studio', 'live', 'segment', 'coverage',
-        'headline', 'breaking', 'weather', 'sports', 'analysis'
-      ];
-      const commonCorrections = {
-        'there': 'their',
-        'weather': 'whether',
-        'to': 'too',
-        'your': "you're"
-      };
+      let isRecognitionActive = false; // Track recognition state
+      let currentWords = [];
+      let wordIndex = 0;
+      let displayInterval = null;
+      let captionLines = ['', '', ''];
+      const maxLines = 3;
+      const maxLineLength = 60;
+      const wordsPerGroup = 4;
+      const displayDelay = 500; // ms between word groups
 
       // Check secure context
       if (!window.isSecureContext) {
@@ -199,9 +172,8 @@
       function initRecognition() {
         const rec = new SpeechRecognition();
         rec.continuous = true;
-        rec.interimResults = true; // Re-enable for small batch processing
-        rec.lang = languageSelect.value;
-        rec.maxAlternatives = 1;
+        rec.interimResults = true;
+        rec.lang = 'en-US';
 
         rec.onstart = () => {
           console.log('Recognition started');
@@ -213,9 +185,12 @@
         rec.onresult = (event) => {
           const result = event.results[event.results.length - 1];
           const text = result[0].transcript.trim();
-          const confidence = result[0].confidence || 1;
-          console.log('Result:', { text, isFinal: result.isFinal, confidence });
-          processText(text, result.isFinal, confidence);
+          console.log('Result:', { text, isFinal: result.isFinal });
+          if (result.isFinal) {
+            processText(text, true);
+          } else {
+            processText(text, false);
+          }
         };
 
         rec.onerror = (event) => {
@@ -248,8 +223,6 @@
 
         return rec;
       }
-
-
 
       // Load audio devices
       async function loadDevices() {
@@ -295,6 +268,7 @@
       }
 
       // Profanity filter
+      const profanityList = ['ass', 'bitch', 'fuck', 'shit', 'damn', 'cunt', 'dick', 'pussy', 'whore', 'fag', 'slut', 'cock'];
       function censorText(text) {
         if (!text) return text;
         let result = text;
@@ -305,106 +279,56 @@
         return result;
       }
 
-      // Domain-specific word boosting
-      function boostDomainWords(text) {
-        return text.split(/\s+/).map(word => {
-          const lowerWord = word.toLowerCase();
-          const match = domainWords.find(dw => dw.toLowerCase().startsWith(lowerWord));
-          return match || word;
-        }).join(' ');
-      }
-
-      // User and common corrections
-      function correctText(text) {
-        const allCorrections = { ...commonCorrections, ...userCorrections };
-        return text.split(/\s+/).map(word => allCorrections[word.toLowerCase()] || word).join(' ');
-      }
-
-      function saveCorrection(oldWord, newWord) {
-        userCorrections[oldWord.toLowerCase()] = newWord;
-        localStorage.setItem('corrections', JSON.stringify(userCorrections));
-      }
-
-      // Basic grammar correction
-      function correctGrammar(text) {
-        if (!text) return text;
-        text = text.charAt(0).toUpperCase() + text.slice(1);
-        if (!text.match(/[.!?]$/)) text += '.';
-        return text;
-      }
-
-      // Process text word by word
-      function processText(text, isFinal, confidence) {
+      // Process text into word groups
+      function processText(text, isFinal) {
         if (!text) return;
-        text = correctGrammar(correctText(censorText(boostDomainWords(text))));
-        const words = text.split(/\s+/).filter(w => w.trim());
-
-        // Find new words by comparing with last displayed words
-        const newWords = [];
-        for (let i = 0; i < words.length; i++) {
-          if (i >= lastWords.length || words[i] !== lastWords[i]) {
-            newWords.push({ word: words[i], confidence });
-          }
-        }
-
-        // Limit to maxWordsPerBatch for interim results
-        const wordsToDisplay = isFinal ? newWords : newWords.slice(0, maxWordsPerBatch);
-        updateDisplay(wordsToDisplay, isFinal);
-
-        // Update lastWords for final results
+        text = censorText(text);
         if (isFinal) {
-          lastWords = words.slice();
+          currentWords = text.split(/\s+/).filter(w => w.trim());
+          wordIndex = 0;
+          if (!displayInterval) {
+            displayInterval = setInterval(displayWordGroup, displayDelay);
+          }
+        } else {
+          updateDisplay([captionLines[0], captionLines[1], text], true);
         }
       }
 
-      // Update display with new words
-      function updateDisplay(words, isFinal) {
-        // Clear interim words if final result is received
-        if (isFinal) {
-          const interimWords = transcriptDiv.querySelectorAll('.interim');
-          interimWords.forEach(word => word.remove());
+      // Display word group
+      function displayWordGroup() {
+        if (wordIndex >= currentWords.length) {
+          clearInterval(displayInterval);
+          displayInterval = null;
+          return;
         }
 
-        let currentLine = transcriptDiv.querySelector('.line:last-child');
-        if (!currentLine) {
-          currentLine = document.createElement('div');
-          currentLine.className = 'line';
-          transcriptDiv.appendChild(currentLine);
+        const groupSize = Math.min(wordsPerGroup, currentWords.length - wordIndex);
+        const wordGroup = currentWords.slice(wordIndex, wordIndex + groupSize).join(' ');
+        wordIndex += groupSize;
+
+        let tempLine = captionLines[2] ? captionLines[2] + ' ' + wordGroup : wordGroup;
+        if (tempLine.length > maxLineLength) {
+          captionLines[0] = captionLines[1];
+          captionLines[1] = captionLines[2];
+          captionLines[2] = wordGroup;
+        } else {
+          captionLines[2] = tempLine;
         }
 
-        let currentText = Array.from(currentLine.querySelectorAll('.word'))
-          .map(span => span.textContent.trim())
-          .join(' ');
-        let charCount = currentText.length + (currentText ? 1 : 0);
+        updateDisplay(captionLines, false);
+      }
 
-        words.forEach((item, index) => {
-          setTimeout(() => {
-            const wordText = item.word;
-            const wordLength = wordText.length + 1;
-
-            if (charCount + wordLength > maxLineLength) {
-              currentLine = document.createElement('div');
-              currentLine.className = 'line';
-              transcriptDiv.appendChild(currentLine);
-              charCount = 0;
-            }
-
-            const span = document.createElement('span');
-            span.className = `word ${isFinal ? '' : 'interim'} ${item.confidence < 0.7 ? 'low-confidence' : ''}`;
-            span.textContent = wordText + ' ';
-            span.addEventListener('click', () => {
-              const newWord = prompt('Correct this word:', wordText);
-              if (newWord && newWord !== wordText) {
-                saveCorrection(wordText, newWord);
-                span.textContent = newWord + ' ';
-              }
-            });
-            currentLine.appendChild(span);
-            charCount += wordLength;
-
-            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-          }, index * wordDelay);
+      // Update display
+      function updateDisplay(lines, isInterim) {
+        transcriptDiv.innerHTML = '';
+        lines.forEach((line, i) => {
+          if (!line && i < maxLines - 1) return;
+          const p = document.createElement('p');
+          p.textContent = line || ' ';
+          p.className = i === maxLines - 1 && isInterim ? 'interim' : '';
+          transcriptDiv.appendChild(p);
         });
+        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
       }
 
       // Start transcription
@@ -419,10 +343,7 @@
             audio: {
               deviceId: { exact: deviceSelect.value },
               noiseSuppression: true,
-              echoCancellation: true,
-              autoGainControl: true,
-              sampleRate: 48000,
-              channelCount: 1
+              echoCancellation: true
             }
           });
           console.log('Stream:', stream);
@@ -432,8 +353,8 @@
           isRecognitionActive = true;
           startBtn.disabled = true;
           stopBtn.disabled = false;
-          transcriptDiv.innerHTML = '';
-          lastWords = [];
+          captionLines = ['', '', ''];
+          updateDisplay(captionLines, false);
         } catch (err) {
           console.error('Start error:', err);
           showError({
@@ -461,18 +382,15 @@
           stream.getTracks().forEach(track => track.stop());
           stream = null;
         }
+        if (displayInterval) {
+          clearInterval(displayInterval);
+          displayInterval = null;
+        }
         startBtn.disabled = false;
         stopBtn.disabled = true;
         statusDiv.textContent = 'Ready';
         statusDiv.style.color = '#ccc';
-        const line = document.createElement('div');
-        line.className = 'line';
-        const span = document.createElement('span');
-        span.className = 'word';
-        span.textContent = 'Transcription stopped. ';
-        line.appendChild(span);
-        transcriptDiv.appendChild(line);
-        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+        updateDisplay(['', '', 'Transcription stopped.'], false);
       }
 
       // Restart recognition
@@ -497,7 +415,7 @@
               stopTranscription();
             }
           }
-        }, 50);
+        }, 100);
       }
 
       // Show error
@@ -509,12 +427,6 @@
       // Event listeners
       startBtn.addEventListener('click', startTranscription);
       stopBtn.addEventListener('click', stopTranscription);
-      languageSelect.addEventListener('change', () => {
-        if (isTranscribing) {
-          stopTranscription();
-          startTranscription();
-        }
-      });
       navigator.mediaDevices.addEventListener('devicechange', loadDevices);
       navigator.permissions.query({ name: 'microphone' }).then(perm => {
         perm.onchange = () => {
