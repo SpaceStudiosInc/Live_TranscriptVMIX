@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Live TV Captions</title>
+  <title>Live Audio Captions</title>
   <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAmElEQVRYR+2WQQqAMAwExyT+/zO7gQ7I4NhbIAbqE/g4wMNAYgBKBZTybgAA7r5UACgVUMq7AQC4+1IBoFRAKe8GAODuSwWAUgGlvBsAgLsvFQCKBVTybgAA7r5UACgVUMq7AQC4+1IBoFRAKe8GAODuSwWAUgGlvBsAgLsvFQCKBVTybgAA7r5UACgVUMq7AQC4+1IBoFRANc0B4E3h1rUAAAAASUVORK5CYII=">
   <style>
     .disclaimer-banner {
@@ -77,13 +77,16 @@
       margin-left: auto;
       color: #ccc;
     }
+    .status-active {
+      color: #28a745 !important;
+    }
     #transcript {
       flex-grow: 1;
       background: rgba(0,0,0,0.8);
       padding: 15px;
       overflow-y: auto;
-      font-size: 20px;
-      line-height: 1.5;
+      font-size: 22px;
+      line-height: 1.4;
       display: flex;
       flex-direction: column;
       align-items: flex-start;
@@ -93,20 +96,26 @@
     #transcript .line {
       display: flex;
       flex-wrap: wrap;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
+      width: 100%;
     }
     #transcript .word {
       display: inline-block;
-      margin-right: 6px;
-      opacity: 0.9;
-      transition: opacity 0.3s;
+      margin-right: 8px;
+      opacity: 1;
       cursor: pointer;
+      transition: background-color 0.2s, opacity 0.2s;
+    }
+    #transcript .word:hover {
+      background-color: rgba(255,255,255,0.1);
+      border-radius: 3px;
+    }
+    #transcript .interim {
+      opacity: 0.6; /* Visual cue for interim words */
     }
     #transcript .low-confidence {
       color: #ffcc00;
-    }
-    #transcript .fade-out {
-      opacity: 0;
+      text-decoration: underline;
     }
     @media (max-width: 600px) {
       .header {
@@ -121,20 +130,20 @@
         width: 100%;
       }
       #transcript {
-        font-size: 16px;
+        font-size: 18px;
       }
     }
   </style>
 </head>
 <body>
   <div class="disclaimer-banner">
-    Disclaimer: Automated transcription may contain inaccuracies. Words shown may be incorrect or inaccurate.
+    Notice: Real-time speech recognition may contain errors. Transcription accuracy varies based on audio quality and speech clarity.
   </div>
   <div class="header">
-    <h1>Live TV Captions</h1>
+    <h1>Live Audio Captions</h1>
     <div class="controls">
       <select id="deviceSelect">
-        <option value="">Select Microphone</option>
+        <option value="">Select Audio Input</option>
       </select>
       <select id="languageSelect">
         <option value="en-US">English (US)</option>
@@ -142,14 +151,17 @@
         <option value="en-AU">English (Australia)</option>
         <option value="en-IN">English (India)</option>
         <option value="en-CA">English (Canada)</option>
+        <option value="es-ES">Spanish</option>
+        <option value="fr-FR">French</option>
+        <option value="de-DE">German</option>
       </select>
-      <button id="startBtn">Start</button>
-      <button id="stopBtn" disabled>Stop</button>
-      <div id="status">Initializing...</div>
+      <button id="startBtn">Start Captions</button>
+      <button id="stopBtn" disabled>Stop Captions</button>
+      <div id="status">Ready</div>
     </div>
   </div>
   <div id="transcript">
-    <div class="line"><span class="word">Select a microphone and click Start.</span></div>
+    <div class="line"><span class="word">Select an audio input device and click "Start Captions" to begin.</span></div>
   </div>
 
   <script>
@@ -160,429 +172,437 @@
       const stopBtn = document.getElementById('stopBtn');
       const transcriptDiv = document.getElementById('transcript');
       const statusDiv = document.getElementById('status');
+      
       let recognition = null;
       let stream = null;
-      let isTranscribing = false;
-      let isRecognitionActive = false;
-      let lastWords = [];
-      let pendingWords = []; // Buffer for overlap during restarts
-      let userCorrections = JSON.parse(localStorage.getItem('corrections')) || {};
-      let restartInterval = null;
-      const wordDelay = 0; // No delay for instant word display
-      const maxLineLength = 80; // Character limit per line
-      const maxLines = 4; // Maximum number of lines to display
-      const restartIntervalTime = 2000; // Restart every 2 seconds for balance
-      const profanityList = ['ass', 'bitch', 'fuck', 'shit', 'damn', 'cunt', 'dick', 'pussy', 'whore', 'fag', 'slut', 'cock'];
-      const domainWords = [
-        'broadcast', 'anchor', 'telecast', 'newsroom', 'reporter', 'correspondent',
-        'studio', 'live', 'segment', 'coverage', 'headline', 'breaking', 'weather',
-        'sports', 'analysis', 'television', 'presenter', 'bulletin', 'newscast',
-        'journalist', 'commentator', 'interview', 'report', 'update', 'politics',
-        'debate', 'channel', 'network', 'program', 'show', 'event'
-      ];
-      const commonCorrections = {
-        'there': 'their',
-        'their': 'they\'re',
-        'weather': 'whether',
-        'to': 'too',
-        'two': 'too',
-        'your': 'you\'re',
-        'then': 'than',
-        'its': 'it\'s',
-        'affect': 'effect',
-        'accept': 'except',
-        'here': 'hear',
-        'where': 'wear'
-      };
+      let isActive = false;
+      let finalTranscript = '';
+      let processedTranscripts = new Set(); // Track processed final transcripts
+      let interimWords = []; // Track current interim words
+      let interimTimeout = null; // Debounce interim updates
+      
+      // Optimized settings
+      const maxLineLength = 75;
+      const maxLines = 4;
+      const interimDebounceMs = 100; // Debounce interim updates
+      
+      // Expanded vocabulary for better accuracy
+      const commonWords = new Set([
+        'the', 'and', 'for', 'are', 'may', 'but', 'you', 'all', 'can', 'had',
+        'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his',
+        'how', 'its', 'new', 'now', 'old', 'see', 'two', 'who', 'did', 'this', 'that',
+        'sit', 'set', 'run', 'eat', 'far', 'sea', 'eye', 'ask', 'own', 'what', 'when',
+        'say', 'she', 'try', 'way', 'too', 'use', 'man', 'big', 'end', 'why',
+        'let', 'put', 'tell', 'very', 'need', 'from', 'there', 'think', 'would',
+        'have', 'they', 'know', 'want', 'been', 'good', 'much', 'some',
+        'time', 'come', 'could', 'state', 'with', 'also', 'back', 'over'
+      ]);
 
-      // Check secure context
+      // Check browser compatibility
       if (!window.isSecureContext) {
-        showError('This page requires HTTPS or localhost. Run: <code>python3 -m http.server 8000</code> and visit <a href="http://localhost:8000">localhost:8000</a>.');
+        showError('Secure connection required. Use HTTPS or localhost.');
         startBtn.disabled = true;
         return;
       }
 
-      // Check Web Speech API
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
-        showError('Speech recognition not supported. Use Chrome or Edge.');
+        showError('Speech recognition not supported. Use Chrome, Edge, or Safari.');
         startBtn.disabled = true;
         return;
       }
 
-      // Check WebRTC
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        showError('Microphone access not supported. This browser lacks WebRTC.');
+      if (!navigator.mediaDevices?.getUserMedia) {
+        showError('Microphone access not supported.');
         startBtn.disabled = true;
         return;
       }
 
-      // Initialize speech recognition
-      function initRecognition() {
+      function initSpeechRecognition() {
         const rec = new SpeechRecognition();
         rec.continuous = true;
-        rec.interimResults = false; // Only final results
+        rec.interimResults = true; // Enable word-by-word updates
         rec.lang = languageSelect.value;
-        rec.maxAlternatives = 1;
+        rec.maxAlternatives = 5; // Increased for better accuracy
 
         rec.onstart = () => {
-          console.log('Recognition started');
-          isRecognitionActive = true;
-          statusDiv.textContent = 'Listening...';
-          statusDiv.style.color = '#28a745';
+          updateStatus('Active', '#28a745');
+          statusDiv.classList.add('status-active');
         };
 
         rec.onresult = (event) => {
-          const result = event.results[event.results.length - 1];
-          const text = result[0].transcript.trim();
-          const confidence = result[0].confidence || 1;
-          console.log('Result:', { text, isFinal: result.isFinal, confidence });
-          processText(text, confidence);
+          let interimTranscript = '';
+          let finalText = '';
+          
+          // Process results
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const result = event.results[i];
+            const bestResult = getBestResult(result);
+            
+            if (result.isFinal) {
+              const transcriptId = `${bestResult.transcript}_${i}`;
+              if (!processedTranscripts.has(transcriptId)) {
+                processedTranscripts.add(transcriptId);
+                finalText += bestResult.transcript + ' ';
+              }
+            } else {
+              interimTranscript += bestResult.transcript + ' ';
+            }
+          }
+
+          // Debounce interim results to reduce flicker
+          if (interimTimeout) clearTimeout(interimTimeout);
+          interimTimeout = setTimeout(() => {
+            // Process interim results
+            if (interimTranscript.trim()) {
+              processInterimResult(interimTranscript.trim());
+            }
+            // Process final results
+            if (finalText.trim()) {
+              finalTranscript += finalText;
+              processFinalResult(finalText.trim());
+            }
+          }, interimDebounceMs);
         };
 
         rec.onerror = (event) => {
-          console.error('Recognition error:', event.error);
+          console.error('Recognition error:',event.error);
           if (event.error === 'no-speech') {
-            statusDiv.textContent = 'No speech detected. Speak clearly or check microphone.';
-            statusDiv.style.color = '#ffc107';
-            restartRecognition();
             return;
           }
-          showError({
-            'not-allowed': 'Microphone access denied. Allow access in browser settings.',
-            'audio-capture': 'No microphone found. Check your device.',
-            'network': 'Network error. Check your connection.',
-            'service-not-allowed': 'Speech recognition blocked. Enable in browser settings.'
-          }[event.error] || `Recognition error: ${event.error}`);
-          stopTranscription();
+          const errorMessages = {
+            'not-allowed': 'Microphone access denied. Please allow microphone access.',
+            'audio-capture': 'No microphone detected. Please connect an audio input device.',
+            'network': 'Network error. Please check your internet connection.'
+          };
+          showError(errorMessages[event.error] || `Error: ${errorMessages[event.error]}`);
+          stopCapturing();
         };
 
         rec.onend = () => {
-          console.log('Recognition ended');
-          isRecognitionActive = false;
-          if (isTranscribing) {
-            restartRecognition();
+          if (isActive) {
+            setTimeout(() => {
+              if (recognition && isActive) {
+                try {
+                  recognition.start();
+                } catch (error) {
+                  if (error.name !== 'InvalidStateError') {
+                    console.error('Restart failed:', error);
+                  }
+                }
+              }
+            }, 100);
           } else {
-            statusDiv.textContent = 'Ready';
-            statusDiv.style.color = '#ccc';
+            updateStatus('Ready', '#ccc');
+            statusDiv.classList.remove('status-active');
           }
         };
 
         return rec;
       }
 
-      // Load audio devices
-      async function loadDevices() {
+      function getBestResult(result) {
+        let bestResult = result[0];
+        let bestScore = result[0].confidence || 0;
+
+        for (let i = 1; i < result.length; i++) {
+          const alternative = result[i];
+          const confidence = alternative.confidence || 0;
+          const transcript = alternative.transcript.toLowerCase();
+          const words = transcript.split(/\s+/);
+          const commonWordBonus = words.filter(word => commonWords.has(word)).length * 0.05; // Reduced bonus for balance
+          const adjustedScore = confidence + commonWordBonus;
+
+          if (adjustedScore > bestScore) {
+            bestResult = alternative;
+            bestScore = adjustedScore;
+          }
+        }
+
+        return {
+          transcript: enhanceText(bestResult.transcript),
+          confidence: bestScore
+        };
+      }
+
+      async function loadAudioDevices() {
         try {
-          const permission = await navigator.permissions.query({ name: 'microphone' });
-          if (permission.state === 'denied') {
-            showError('Microphone access denied. <button id="retryPerm">Retry</button>');
-            document.getElementById('retryPerm')?.addEventListener('click', loadDevices);
+          const tempStream = await navigator.mediaDevices.getUserMedia({audio: true});
+          tempStream.getTracks().forEach(track => track.stop());
+
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const audioInputs = devices.filter(device => device.kind === 'audioinput');
+
+          deviceSelect.innerHTML = '<option value="">Select Audio Input</option>';
+
+          if (audioInputs.length === 0) {
+            showError('No audio input devices found.');
             startBtn.disabled = true;
             return;
           }
 
-          let devices = await navigator.mediaDevices.enumerateDevices();
-          if (!devices.some(d => d.kind === 'audioinput' && d.label)) {
-            const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            tempStream.getTracks().forEach(track => track.stop());
-            devices = await navigator.mediaDevices.enumerateDevices();
-          }
-          console.log('Devices:', devices.filter(d => d.kind === 'audioinput'));
-
-          const audioDevices = devices.filter(d => d.kind === 'audioinput');
-          deviceSelect.innerHTML = '<option value="">Select Microphone</option>';
-          if (!audioDevices.length) {
-            showError('No microphones found. Connect a device.');
-            startBtn.disabled = true;
-            return;
-          }
-
-          audioDevices.forEach((device, i) => {
+          audioInputs.forEach((device, index) => {
             const option = document.createElement('option');
             option.value = device.deviceId;
-            option.text = device.label || `Microphone ${i + 1}`;
+            option.textContent = device.label || `Audio Input ${index + 1}`;
             deviceSelect.appendChild(option);
           });
-          statusDiv.textContent = 'Ready';
-          statusDiv.style.color = '#ccc';
+
+          if (audioInputs.length === 0) {
+            deviceSelect.value = audioInputs[0].deviceId;
+          }
+
+          updateStatus('Ready', '#ccc');
           startBtn.disabled = false;
-        } catch (err) {
-          console.error('Load devices error:', err);
-          showError(`Failed to load devices: ${err.name === 'NotAllowedError' ? 'Microphone access denied' : err.message}`);
+
+        } catch (error) {
+          console.error('Error loading audio devices:', error);
+          const message = error.name === 'NotAllowedError' 
+            ? 'Microphone access denied. Please allow microphone access and try again.'
+            : 'Failed to access audio devices.';
+            showError(message);
           startBtn.disabled = true;
         }
       }
 
-      // Profanity filter
-      function censorText(text) {
-        if (!text) return text;
-        let result = text;
-        profanityList.forEach(word => {
-          const regex = new RegExp(`\\b${word}\\b`, 'gi');
-          result = result.replace(regex, '*'.repeat(word.length));
-        });
-        return result;
-      }
+      function enhanceText(text) {
+        if (!text) return '';
 
-      // Domain-specific word boosting
-      function boostDomainWords(text) {
-        if (!text) return text;
-        return text.split(/\s+/).map(word => {
-          if (word.length < 3) return word;
-          const lowerWord = word.toLowerCase().replace(/[^a-z]/g, '');
-          if (!lowerWord) return word;
-          const matches = domainWords.filter(dw => {
-            const lowerDW = dw.toLowerCase();
-            return lowerDW.startsWith(lowerWord) || lowerWord.startsWith(lowerDW) ||
-                   (Math.abs(lowerWord.length - lowerDW.length) <= 2 && lowerWord[0] === lowerDW[0]);
-          });
-          return matches.length === 1 && matches[0].length >= 3 ? matches[0] : word;
-        }).join(' ');
-      }
-
-      // User and common corrections
-      function correctText(text) {
-        if (!text) return text;
-        const allCorrections = { ...commonCorrections, ...userCorrections };
-        return text.split(/\s+/).map(word => {
-          const trimmed = word.trim();
-          const corrected = allCorrections[trimmed.toLowerCase()];
-          return corrected !== undefined ? corrected : word;
-        }).join(' ');
-      }
-
-      function saveCorrection(oldWord, newWord) {
-        userCorrections[oldWord.toLowerCase()] = newWord;
-        localStorage.setItem('corrections', JSON.stringify(userCorrections));
-      }
-
-      // Grammar correction
-      function correctGrammar(text) {
-        if (!text) return text;
         text = text.trim();
-        if (text.length === 0) return text;
-        text = text.charAt(0).toUpperCase() + text.slice(1);
-        if (!text.match(/[.!?]$/)) text += ' ';
-        text = text.replace(/\s+/g, ' '); // Normalize spaces
+        if (!text) return '';
+
+        // Enhanced corrections
+        text = text.replace(/^./, c => c.toUpperCase());
+        text = text.replace(/\.\s+./g, m => m.toUpperCase());
+
+        const corrections = {
+          ' i ': ' I ',
+          ' im ': ' I\'m ',
+          ' ive ': ' I\'ve ',
+          ' id ': ' I\'d ',
+          ' ill ': ' I\'ll ',
+          ' cant ': ' can\'t ',
+          ' wont ': ' won\'t ',
+          ' dont ': ' don\'t ',
+          ' isnt ': ' isn\'t ',
+          ' arent ': ' aren\'t ',
+          ' wasnt ': ' wasn\'t ',
+          ' werent ': ' weren\'t ',
+          ' hasnt ': ' hasn\'t ',
+          ' havent ': ' haven\'t ',
+          ' hadnt ': ' hadn\'t ',
+          ' wouldnt ': ' wouldn\'t ',
+          ' shouldnt ': ' shouldn\'t ',
+          ' couldnt ': ' couldn\'t ',
+          ' gonna ': ' going to ',
+          ' wanna ': ' want to ',
+          ' kinda ': ' kind of '
+        };
+
+        Object.entries(corrections).forEach(([wrong, right]) => {
+          const regex = new RegExp(wrong.replace(/'/g, '\''), 'gi');
+          text = text.replace(regex, right);
+        });
+
         return text;
       }
 
-      // Normalize text for comparison
-      function normalizeText(text) {
-        return text.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()\[\]]/g, '');
+      function processInterimResult(text) {
+        const words = text.split(/\s+/).filter(w => w);
+        if (!words.length) return;
+
+        // Remove previous interim words
+        interimWords.forEach(wordSpan => wordSpan.remove());
+        interimWords = [];
+
+        // Display new interim words
+        displayWords(words, true);
       }
 
-      // Process text
-      function processText(text, confidence) {
-        if (!text) return;
-        text = correctGrammar(correctText(censorText(boostDomainWords(text))));
-        const words = text.split(/\s+/).filter(w => w.trim());
+      function processFinalResult(text) {
+        // Remove interim words
+        interimWords.forEach(wordSpan => wordSpan.remove());
+        interimWords = [];
 
-        // Combine with pending words from previous restart
-        const allWords = [...pendingWords, ...words];
-        pendingWords = words.slice(-2); // Keep last 2 words for next overlap
-
-        const newWords = [];
-        for (let i = 0; i < allWords.length; i++) {
-          if (i >= lastWords.length || normalizeText(allWords[i]) !== normalizeText(lastWords[i])) {
-            newWords.push({ word: allWords[i], confidence });
-          }
+        const words = text.split(/\s+/).filter(w => w);
+        if (words.length) {
+          displayWords(words, false);
         }
-
-        if (newWords.length > 0) {
-          updateDisplay(newWords);
-        }
-        lastWords = allWords.slice();
       }
 
-      // Update display with new words
-      function updateDisplay(words) {
+      function displayWords(words, isInterim) {
         let currentLine = transcriptDiv.querySelector('.line:last-child');
-        if (!currentLine) {
-          currentLine = document.createElement('div');
-          currentLine.className = 'line';
-          transcriptDiv.appendChild(currentLine);
+        if (!currentLine || currentLine.textContent.includes('Select an audio input')) {
+          transcriptDiv.innerHTML = '';
+          currentLine = createNewLine();
         }
 
-        let currentText = Array.from(currentLine.querySelectorAll('.word'))
-          .map(span => span.textContent.trim())
-          .join(' ');
-        let charCount = currentText.length + (currentText ? 1 : 0);
+        let lineLength = getCurrentLineLength(currentLine);
 
-        words.forEach((item) => {
-          const wordText = item.word;
-          const wordLength = wordText.length + 1;
+        words.forEach(word => {
+          const wordLength = word.length + 1;
 
-          if (charCount + wordLength > maxLineLength) {
-            currentLine = document.createElement('div');
-            currentLine.className = 'line';
-            transcriptDiv.appendChild(currentLine);
-            charCount = 0;
-
-            const lines = transcriptDiv.querySelectorAll('.line');
-            if (lines.length > maxLines) {
-              transcriptDiv.removeChild(lines[0]);
-            }
+          if (lineLength + wordLength > maxLineLength) {
+            currentLine = createNewLine();
+            lineLength = 0;
           }
 
-          const span = document.createElement('span');
-          span.className = `word ${item.confidence < 0.7 ? 'low-confidence' : ''}`;
-          span.textContent = wordText + ' ';
-          span.addEventListener('click', () => {
-            const newWord = prompt('Correct this word:', wordText);
-            if (newWord && newWord !== wordText) {
-              saveCorrection(wordText, newWord);
-              span.textContent = newWord + ' ';
-            }
-          });
+          const span = createWordSpan(word);
+          if (isInterim) {
+            span.classList.add('interim');
+            interimWords.push(span);
+          }
           currentLine.appendChild(span);
-          charCount += wordLength;
-
-          transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+          lineLength += wordLength;
         });
+
+        // Remove excess lines
+        const lines = transcriptDiv.querySelectorAll('.line');
+        if (lines.length > maxLines) {
+          lines[0].remove();
+        }
+
+        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+        cleanupProcessedTranscripts();
       }
 
-      // Start transcription
-      async function startTranscription() {
+      function createNewLine() {
+        const line = document.createElement('div');
+        line.className = 'line';
+        transcriptDiv.appendChild(line);
+        return line;
+      }
+
+      function getCurrentLineLength(line) {
+        return Array.from(line.children)
+          .reduce((len, span) => len + span.textContent.length, 0);
+      }
+
+      function createWordSpan(word) {
+        const span = document.createElement('span');
+        span.className = 'word';
+        span.textContent = word + ' ';
+        span.addEventListener('click', () => editWord(span));
+        return span;
+      }
+
+      function editWord(span) {
+        const currentText = span.textContent.trim();
+        const newText = prompt('Edit word:', currentText);
+        if (newText && newText !== currentText) {
+          span.textContent = newText + ' ';
+        }
+      }
+
+      function cleanupProcessedTranscripts() {
+        if (processedTranscripts.size > 1000) {
+          processedTranscripts.clear();
+        }
+      }
+
+      async function startCapturing() {
         if (!deviceSelect.value) {
-          showError('Please select a microphone.');
+          showError('Please select an audio input device.');
           return;
         }
-        stopTranscription();
+
         try {
+          stopCapturing();
+
           stream = await navigator.mediaDevices.getUserMedia({
             audio: {
               deviceId: { exact: deviceSelect.value },
               noiseSuppression: true,
               echoCancellation: true,
               autoGainControl: true,
-              sampleRate: 48000,
-              channelCount: 1
+              sampleRate: 48000 // Higher sample rate for clarity
             }
           });
-          console.log('Stream:', stream);
-          recognition = initRecognition();
+
+          recognition = initSpeechRecognition();
           recognition.start();
-          isTranscribing = true;
-          isRecognitionActive = true;
+          
+          isActive = true;
           startBtn.disabled = true;
           stopBtn.disabled = false;
+          
           transcriptDiv.innerHTML = '';
-          lastWords = [];
-          pendingWords = [];
-
-          // Force restart every 2 seconds
-          restartInterval = setInterval(() => {
-            if (isTranscribing && isRecognitionActive && recognition) {
-              try {
-                recognition.stop();
-                console.log('Forced recognition restart');
-              } catch (e) {
-                console.error('Forced restart error:', e);
-              }
-            }
-          }, restartIntervalTime);
-        } catch (err) {
-          console.error('Start error:', err);
-          showError({
-            NotAllowedError: 'Microphone access denied.',
-            NotFoundError: 'No microphone found.',
-            OverconstrainedError: 'Selected device unavailable.'
-          }[err.name] || `Error: ${err.message}`);
-          stopTranscription();
+          finalTranscript = '';
+          processedTranscripts.clear();
+          interimWords = [];
+          
+        } catch (error) {
+          console.error('Error starting capture:', error);
+          const errorMessages = {
+            'NotAllowedError': 'Microphone access denied.',
+            'NotFoundError': 'Selected audio device not found.',
+            'OverconstrainedError': 'Selected audio device not available.'
+          };
+          showError(errorMessages[error.name] || `Error: ${error.message}`);
+          stopCapturing();
         }
       }
 
-      // Stop transcription
-      function stopTranscription() {
-        isTranscribing = false;
-        isRecognitionActive = false;
-        if (restartInterval) {
-          clearInterval(restartInterval);
-          restartInterval = null;
-        }
+      function stopCapturing() {
+        isActive = false;
+        finalTranscript = '';
+        processedTranscripts.clear();
+        interimWords.forEach(wordSpan => wordSpan.remove());
+        interimWords = [];
+        if (interimTimeout) clearTimeout(interimTimeout);
+
         if (recognition) {
           try {
             recognition.stop();
-          } catch (e) {
-            console.error('Stop recognition error:', e);
+          } catch (error) {
+            console.error('Error stopping recognition:', error);
           }
           recognition = null;
         }
+
         if (stream) {
           stream.getTracks().forEach(track => track.stop());
           stream = null;
         }
+
         startBtn.disabled = false;
         stopBtn.disabled = true;
-        statusDiv.textContent = 'Ready';
-        statusDiv.style.color = '#ccc';
-        const line = document.createElement('div');
-        line.className = 'line';
-        const span = document.createElement('span');
-        span.className = 'word';
-        span.textContent = 'Transcription stopped. ';
-        line.appendChild(span);
-        transcriptDiv.appendChild(line);
-        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-      }
-
-      // Restart recognition
-      function restartRecognition() {
-        if (!isTranscribing || !recognition || isRecognitionActive) {
-          console.log('Restart skipped:', { isTranscribing, recognition: !!recognition, isRecognitionActive });
-          return;
+        updateStatus('Ready', '#ccc');
+        if (transcriptDiv.children.length > 0) {
+          const line = createNewLine();
+          const span = createWordSpan('[Captions stopped]');
+          span.style.color = '#888';
+          span.style.fontStyle = 'italic';
+          line.appendChild(span);
         }
-        setTimeout(() => {
-          if (isTranscribing && recognition && !isRecognitionActive) {
-            try {
-              recognition.start();
-              isRecognitionActive = true;
-              console.log('Recognition restarted');
-            } catch (err) {
-              console.error('Restart error:', err);
-              if (err.name === 'InvalidStateError') {
-                console.log('Recognition already active or stopping');
-                return;
-              }
-              showError('Failed to restart transcription.');
-              stopTranscription();
-            }
-          }
-        }, 50);
       }
 
-      // Show error
+      function updateStatus(message, color) {
+        statusDiv.textContent = message;
+        statusDiv.style.color = color;
+      }
+
       function showError(message) {
-        statusDiv.innerHTML = `<span style="color: #d9534f;">${message}</span>`;
-        statusDiv.style.color = '#d9534f';
+        updateStatus(`Error: ${message}`, '#dc3545');
+        statusDiv.classList.remove('status-active');
       }
 
       // Event listeners
-      startBtn.addEventListener('click', startTranscription);
-      stopBtn.addEventListener('click', stopTranscription);
+      startBtn.addEventListener('click', startCapturing);
+      stopBtn.addEventListener('click', stopCapturing);
+      
       languageSelect.addEventListener('change', () => {
-        if (isTranscribing) {
-          stopTranscription();
-          startTranscription();
+        if (isActive) {
+          stopCapturing();
+          setTimeout(startCapturing, 100);
         }
       });
-      navigator.mediaDevices.addEventListener('devicechange', loadDevices);
-      navigator.permissions.query({ name: 'microphone' }).then(perm => {
-        perm.onchange = () => {
-          console.log('Permission:', perm.state);
-          if (perm.state === 'granted') loadDevices();
-          else if (perm.state === 'denied') {
-            showError('Microphone access denied. <button id="retryPerm">Retry</button>');
-            document.getElementById('retryPerm')?.addEventListener('click', loadDevices);
-            stopTranscription();
-          }
-        };
-      });
+
+      navigator.mediaDevices.addEventListener('devicechange', loadAudioDevices);
 
       // Initialize
-      loadDevices();
+      loadAudioDevices();
+      
     })();
   </script>
 </body>
