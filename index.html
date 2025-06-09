@@ -47,7 +47,7 @@
       display: flex;
       gap: 8px;
       align-items: center;
-      flex-grow: wrap;
+      flex-wrap: wrap;
     }
     select, button {
       padding: 8px;
@@ -116,6 +116,9 @@
       color: #ffcc00;
       text-decoration: underline;
     }
+    #transcript .interim {
+      color: #888;
+    }
     @media (max-width: 600px) {
       .header {
         flex-direction: column;
@@ -176,11 +179,12 @@
       let stream = null;
       let isActive = false;
       let finalTranscript = '';
-      let processedTranscripts = new Set();
-      
+      let interimTranscript = '';
+      let lastUpdateTime = 0;
+      const updateInterval = 2000; // 2 seconds
       const maxLineLength = 100;
       const maxLines = 2;
-      
+
       const commonWords = new Set([
         'the', 'and', 'for', 'are', 'may', 'but', 'you', 'all', 'can', 'had',
         'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his',
@@ -224,7 +228,7 @@
       function initSpeechRecognition() {
         const rec = new SpeechRecognition();
         rec.continuous = true;
-        rec.interimResults = false;
+        rec.interimResults = true; // Enable interim results
         rec.lang = languageSelect.value;
         rec.maxAlternatives = 5;
 
@@ -234,30 +238,36 @@
         };
 
         rec.onresult = (event) => {
+          let interimText = '';
           let finalText = '';
-          
+
           for (let i = event.resultIndex; i < event.results.length; i++) {
             const result = event.results[i];
+            const bestResult = getBestResult(result);
             if (result.isFinal) {
-              const bestResult = getBestResult(result);
-              const transcriptId = `${bestResult.transcript}_${i}`;
-              if (!processedTranscripts.has(transcriptId)) {
-                processedTranscripts.add(transcriptId);
-                finalText += bestResult.transcript + ' ';
-              }
+              finalText += bestResult.transcript + ' ';
+            } else {
+              interimText += bestResult.transcript + ' ';
             }
           }
 
+          const currentTime = Date.now();
           if (finalText.trim()) {
             finalTranscript += finalText;
-            processFinalResult(finalText.trim());
+            processTranscript(finalText.trim(), true);
+            interimTranscript = '';
+            lastUpdateTime = currentTime;
+          } else if (interimText.trim() && (currentTime - lastUpdateTime >= updateInterval)) {
+            interimTranscript = interimText;
+            processTranscript(interimText.trim(), false);
+            lastUpdateTime = currentTime;
           }
         };
 
         rec.onerror = (event) => {
           console.error('Recognition error:', event.error);
           if (event.error === 'no-speech') {
-            cleanupEmptyLines(); // Clean up empty lines during silence
+            cleanupEmptyLines();
             return;
           }
           const errorMessages = {
@@ -400,14 +410,14 @@
         return text;
       }
 
-      function processFinalResult(text) {
+      function processTranscript(text, isFinal) {
         const words = text.split(/\s+/).filter(w => w);
         if (words.length) {
-          displayWords(words);
+          displayWords(words, isFinal);
         }
       }
 
-      function displayWords(words) {
+      function displayWords(words, isFinal) {
         if (transcriptDiv.textContent.includes('Select an audio input')) {
           transcriptDiv.innerHTML = '';
         }
@@ -420,6 +430,12 @@
 
         let lineLength = getCurrentLineLength(currentLine);
 
+        // Remove existing interim words
+        if (!isFinal) {
+          transcriptDiv.querySelectorAll('.interim').forEach(span => span.remove());
+          lineLength = getCurrentLineLength(currentLine);
+        }
+
         words.forEach(word => {
           if (!word) return;
           
@@ -430,7 +446,7 @@
             lineLength = 0;
           }
 
-          const span = createWordSpan(word);
+          const span = createWordSpan(word, isFinal);
           currentLine.appendChild(span);
           lineLength += wordLength;
         });
@@ -443,7 +459,6 @@
 
         cleanupEmptyLines();
         transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-        cleanupProcessedTranscripts();
       }
 
       function createNewLine() {
@@ -458,9 +473,10 @@
           .reduce((len, span) => len + span.textContent.length, 0);
       }
 
-      function createWordSpan(word) {
+      function createWordSpan(word, isFinal) {
         const span = document.createElement('span');
         span.className = 'word';
+        if (!isFinal) span.classList.add('interim');
         span.textContent = word + ' ';
         span.addEventListener('click', () => editWord(span));
         return span;
@@ -480,12 +496,6 @@
             line.remove();
           }
         });
-      }
-
-      function cleanupProcessedTranscripts() {
-        if (processedTranscripts.size > 1000) {
-          processedTranscripts.clear();
-        }
       }
 
       async function startCapturing() {
@@ -516,7 +526,8 @@
           
           transcriptDiv.innerHTML = '';
           finalTranscript = '';
-          processedTranscripts.clear();
+          interimTranscript = '';
+          lastUpdateTime = Date.now();
           
         } catch (error) {
           console.error('Error starting capture:', error);
@@ -533,7 +544,7 @@
       function stopCapturing() {
         isActive = false;
         finalTranscript = '';
-        processedTranscripts.clear();
+        interimTranscript = '';
 
         if (recognition) {
           try {
@@ -554,7 +565,8 @@
         updateStatus('Ready', '#ccc');
         if (transcriptDiv.children.length > 0) {
           const line = createNewLine();
-          const span = createWordSpan('[Captions stopped]');
+          const span = createWordSpan('span');
+          span.caption = '[Captions stopped]';
           span.style.color = '#888';
           span.style.fontStyle = 'italic';
           line.appendChild(span);
@@ -562,8 +574,8 @@
         cleanupEmptyLines();
       }
 
-      function updateStatus(message, color) {
-        statusDiv.textContent = message;
+      function updateStatus(text, color) {
+        statusDiv.textContent = text;
         statusDiv.style.color = color;
       }
 
@@ -575,10 +587,12 @@
       startBtn.addEventListener('click', startCapturing);
       stopBtn.addEventListener('click', stopCapturing);
       
-      if (languageSelect) languageSelect.onchange = () => {
-        if (isActive) {
-          stopCapturing();
-          setTimeout(startCapturing, 100);
+      if (languageSelect) {
+        languageSelect.onchange = () => {
+          if (isActive) {
+            stopCapturing();
+            setTimeout(startCapturing, 100);
+          }
         }
       }
 
