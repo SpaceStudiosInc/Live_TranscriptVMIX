@@ -198,8 +198,9 @@
         });
 
         // Initialize
-        requestMicPermission();
-        initSpeechRecognition();
+        requestMicPermission().then(() => {
+            initSpeechRecognition();
+        });
     </script>
 </body>
 </html>
