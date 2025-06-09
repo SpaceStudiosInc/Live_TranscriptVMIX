@@ -92,10 +92,6 @@
       transition: opacity 0.5s;
       cursor: pointer;
     }
-    #transcript .interim {
-      font-style: italic;
-      opacity: 0.7;
-    }
     #transcript .low-confidence {
       color: #ffcc00;
     }
@@ -157,9 +153,11 @@
       let isRecognitionActive = false;
       let lastWords = [];
       let userCorrections = JSON.parse(localStorage.getItem('corrections')) || {};
- const wordDelay = 100; // Faster delay for real-time feel
-      const maxLineLength = 64; // Character limit per line
-      const maxWordsPerBatch = 5; // Max words to display per batch
+      let restartInterval = null;
+      const wordDelay = 100; // Delay for word-by-word display
+      const maxLineLength = 80; // Increased character limit per line
+      const maxLines = 4; // Maximum number of lines to display
+      const restartIntervalTime = 3000; // Restart recognition every 3 seconds
       const profanityList = ['ass', 'bitch', 'fuck', 'shit', 'damn', 'cunt', 'dick', 'pussy', 'whore', 'fag', 'slut', 'cock'];
       const domainWords = [
         'broadcast', 'anchor', 'telecast', 'newsroom', 'reporter',
@@ -199,7 +197,7 @@
       function initRecognition() {
         const rec = new SpeechRecognition();
         rec.continuous = true;
-        rec.interimResults = true; // Re-enable for small batch processing
+        rec.interimResults = false; // Only show final results
         rec.lang = languageSelect.value;
         rec.maxAlternatives = 1;
 
@@ -215,7 +213,7 @@
           const text = result[0].transcript.trim();
           const confidence = result[0].confidence || 1;
           console.log('Result:', { text, isFinal: result.isFinal, confidence });
-          processText(text, result.isFinal, confidence);
+          processText(text, confidence);
         };
 
         rec.onerror = (event) => {
@@ -248,8 +246,6 @@
 
         return rec;
       }
-
-
 
       // Load audio devices
       async function loadDevices() {
@@ -299,7 +295,7 @@
         if (!text) return text;
         let result = text;
         profanityList.forEach(word => {
-          const regex = new RegExp(`\\b${word}\\b`, 'gi');
+          const regex = new RegExp('\\b${word}\\b', 'gi');
           result = result.replace(regex, '*'.repeat(word.length));
         });
         return result;
@@ -334,7 +330,7 @@
       }
 
       // Process text word by word
-      function processText(text, isFinal, confidence) {
+      function processText(text, confidence) {
         if (!text) return;
         text = correctGrammar(correctText(censorText(boostDomainWords(text))));
         const words = text.split(/\s+/).filter(w => w.trim());
@@ -347,24 +343,12 @@
           }
         }
 
-        // Limit to maxWordsPerBatch for interim results
-        const wordsToDisplay = isFinal ? newWords : newWords.slice(0, maxWordsPerBatch);
-        updateDisplay(wordsToDisplay, isFinal);
-
-        // Update lastWords for final results
-        if (isFinal) {
-          lastWords = words.slice();
-        }
+        updateDisplay(newWords);
+        lastWords = words.slice();
       }
 
       // Update display with new words
-      function updateDisplay(words, isFinal) {
-        // Clear interim words if final result is received
-        if (isFinal) {
-          const interimWords = transcriptDiv.querySelectorAll('.interim');
-          interimWords.forEach(word => word.remove());
-        }
-
+      function updateDisplay(words) {
         let currentLine = transcriptDiv.querySelector('.line:last-child');
         if (!currentLine) {
           currentLine = document.createElement('div');
@@ -387,10 +371,16 @@
               currentLine.className = 'line';
               transcriptDiv.appendChild(currentLine);
               charCount = 0;
+
+              // Remove oldest line if there are 5 or more lines
+              const lines = transcriptDiv.querySelectorAll('.line');
+              if (lines.length > maxLines) {
+                transcriptDiv.removeChild(lines[0]);
+              }
             }
 
             const span = document.createElement('span');
-            span.className = `word ${isFinal ? '' : 'interim'} ${item.confidence < 0.7 ? 'low-confidence' : ''}`;
+            span.className = `word ${item.confidence < 0.7 ? 'low-confidence' : ''}`;
             span.textContent = wordText + ' ';
             span.addEventListener('click', () => {
               const newWord = prompt('Correct this word:', wordText);
@@ -434,6 +424,18 @@
           stopBtn.disabled = false;
           transcriptDiv.innerHTML = '';
           lastWords = [];
+
+          // Force restart every 3 seconds for small final result batches
+          restartInterval = setInterval(() => {
+            if (isTranscribing && isRecognitionActive && recognition) {
+              try {
+                recognition.stop();
+                console.log('Forced recognition restart');
+              } catch (e) {
+                console.error('Forced restart error:', e);
+              }
+            }
+          }, restartIntervalTime);
         } catch (err) {
           console.error('Start error:', err);
           showError({
@@ -449,6 +451,10 @@
       function stopTranscription() {
         isTranscribing = false;
         isRecognitionActive = false;
+        if (restartInterval) {
+          clearInterval(restartInterval);
+          restartInterval = null;
+        }
         if (recognition) {
           try {
             recognition.stop();
