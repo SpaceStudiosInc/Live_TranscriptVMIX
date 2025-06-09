@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Audio to Text</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #616161;
+      color: #ebebeb;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    .header {
+      background-color: #2d2d2d;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      flex-wrap: wrap;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 18px;
+      white-space: nowrap;
+      margin-right: 10px;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      flex-grow: 1;
+    }
+    #deviceSelect {
+      padding: 6px 10px;
+      min-width: 200px;
+      background: #3d3d3d;
+      color: #fff;
+      border: 1px solid #555;
+      border-radius: 4px;
+    }
+    button {
+      padding: 6px 12px;
+      background: #4a90e2;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #357abd;
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    #transcript {
+      flex-grow: 1;
+      background-color: rgba(0, 0, 0, 0.9);
+      color: white;
+      padding: 30px 40px;
+      overflow-y: auto;
+      line-height: 1.8;
+      font-size: 24px;
+      font-family: Arial, sans-serif;
+      font-weight: 500;
+      min-height: 200px;
+      max-height: none;
+      overflow: hidden;
+      border-radius: 4px;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      letter-spacing: 0.5px;
+    }
+    #transcript p {
+      margin: 2px 0;
+      opacity: 1;
+      transition: opacity 0.5s ease-out;
+    }
+    #transcript p.fade-out {
+      opacity: 0;
+    }
+    #startBtn, #stopBtn {
+      padding: 10px 20px;
+      margin: 5px;
+      cursor: pointer;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+    }
+    #startBtn:disabled, #stopBtn:disabled {
+      cursor: not-allowed;
+      background-color: #ccc;
+    }
+    #status {
+      color: #d9534f;
+      margin: 10px 0;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Live Captions</h1>
+    <div class="controls">
+      <select id="deviceSelect">
+        <option value="">Select Audio Device</option>
+      </select>
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <div id="status" style="margin-left: auto; color: #aaa; font-size: 14px;">Ready</div>
+    </div>
+  </div>
+  
+  <div id="transcript">Select a device and click "Start Transcription".</div>
+
+  <script>
+    (function() {
+      const deviceSelect = document.getElementById('deviceSelect');
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const transcriptDiv = document.getElementById('transcript');
+      const statusDiv = document.getElementById('status');
+      let recognition = null;
+      let stream = null;
+      let captionLines = ['', '', '']; // Lines 1, 2, 3
+      let lineHistory = []; // Store previous lines
+      const maxLines = 3;
+      const maxLineLength = 64;
+      let currentWords = [];
+      let wordIndex = 0;
+      let buildInterval = null;
+      let isBuilding = false;
+      let lastProcessedText = '';
+
+      // Check secure context
+      if (!window.isSecureContext) {
+        const isLocalhost = window.location.hostname === 'localhost' || 
+                          window.location.hostname === '127.0.0.1';
+        let errorMessage = 'Error: This page must be served over HTTPS or localhost.\n\n';
+        if (isLocalhost) {
+          errorMessage += 'You appear to be running this locally. ';
+        } else {
+          errorMessage += 'To use this application, you need to either:\n';
+          errorMessage += '1. Serve it over HTTPS (recommended for production)\n';
+          errorMessage += '2. Run it on localhost (for development)\n\n';
+          errorMessage += 'To run locally, you can use Python\'s built-in server:\n';
+          errorMessage += '1. Open terminal in this folder\n';
+          errorMessage += '2. Run: python3 -m http.server 8000\n';
+          errorMessage += '3. Open http://localhost:8000 in your browser\n';
+        }
+        statusDiv.innerHTML = errorMessage.replace(/\n/g, '<br>') + 
+          '<br><br><button id="copyCmd" style="padding: 8px 16px; background: #5cb85c; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px;">' +
+          'Copy Local Server Command</button>';
+        document.getElementById('copyCmd')?.addEventListener('click', () => {
+          navigator.clipboard.writeText('python3 -m http.server 8000')
+            .then(() => alert('Command copied to clipboard! Run this in your terminal.'))
+            .catch(err => console.error('Failed to copy:', err));
+        });
+        startBtn.disabled = true;
+        return;
+      }
+
+      // Check Web Speech API
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
+        const isEdge = /Edg/.test(navigator.userAgent);
+        let message = 'Error: Speech recognition is not supported in this browser. ';
+        if (!isChrome && !isEdge) {
+          message += 'Please use Google Chrome or Microsoft Edge for the best experience. ';
+          message += 'Other browsers may have limited or no support for the Web Speech API.';
+        } else {
+          message += 'Please ensure you are using the latest version of your browser.';
+        }
+        statusDiv.innerHTML = message + '<br><br>Your browser: ' + navigator.userAgent;
+        startBtn.disabled = true;
+        return;
+      }
+
+      // Initialize speech recognition
+      function createRecognition() {
+        try {
+          if (!window.webkitSpeechRecognition && !window.SpeechRecognition) {
+            throw new Error('Speech recognition not supported in this browser');
+          }
+          const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = 'en-US';
+          recognition.onerror = (event) => {
+            console.error('Recognition error:', event.error, event.message);
+            if (event.error === 'service-not-allowed') {
+              statusDiv.innerHTML = `
+                <div style="color: #d9534f; margin-bottom: 15px;">
+                  <strong>Speech Recognition Blocked:</strong> Please enable speech recognition in your browser settings.
+                </div>
+                <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin: 10px 0; font-size: 14px;">
+                  <strong>To enable in Chrome/Edge:</strong><br>
+                  1. Click the lock icon in the address bar<br>
+                  2. Click "Site settings"<br>
+                  3. Set "Speech recognition" to "Allow"<br>
+                  4. Refresh the page and try again
+                </div>
+                <button id="retryBtn" style="padding: 8px 16px; background: #5cb85c; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 10px;">
+                  I've enabled it, try again
+                </button>
+              `;
+              document.getElementById('retryBtn')?.addEventListener('click', () => {
+                window.location.reload();
+              });
+            }
+            stopTranscription();
+          };
+          return recognition;
+        } catch (err) {
+          console.error('Error creating speech recognition:', err);
+          statusDiv.innerHTML = `
+            <div style="color: #d9534f;">
+              <strong>Error:</strong> ${err.message || 'Failed to initialize speech recognition'}
+            </div>
+          `;
+          return null;
+        }
+      }
+
+      // Check WebRTC support
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        statusDiv.innerText = 'Error: Audio capture not supported. This browser does not support WebRTC.';
+        startBtn.disabled = true;
+        return;
+      }
+
+      // Load audio devices
+      async function loadDevices() {
+        try {
+          let devices = [];
+          try {
+            devices = await navigator.mediaDevices.enumerateDevices();
+            console.log('Initial devices:', devices.filter(d => d.kind === 'audioinput'));
+          } catch (err) {
+            console.log('Initial device enumeration failed, will try with permission');
+          }
+          if (!devices.some(device => device.kind === 'audioinput' && device.label)) {
+            try {
+              const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              tempStream.getTracks().forEach(track => track.stop());
+              devices = await navigator.mediaDevices.enumerateDevices();
+              console.log('Devices after permission:', devices.filter(d => d.kind === 'audioinput'));
+            } catch (err) {
+              console.error('Error getting microphone permission:', err);
+              statusDiv.innerHTML = `
+                <div style="color: #d9534f; margin-bottom: 10px;">
+                  <strong>Microphone access required:</strong> Please allow microphone access to continue.
+                </div>
+                <button id="retryPermission" style="padding: 8px 16px; background: #5cb85c; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                  Grant Microphone Permission
+                </button>
+              `;
+              document.getElementById('retryPermission')?.addEventListener('click', loadDevices);
+              return;
+            }
+          }
+          const audioDevices = devices.filter(device => device.kind === 'audioinput');
+          deviceSelect.innerHTML = '<option value="">Select a device</option>';
+          if (!audioDevices.length) {
+            statusDiv.innerText = 'Error: No audio input devices found. Please connect a microphone.';
+            startBtn.disabled = true;
+            return;
+          }
+          audioDevices.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.deviceId;
+            option.text = device.label || `Microphone ${deviceSelect.length + 1}`;
+            deviceSelect.appendChild(option);
+          });
+          statusDiv.innerText = 'Please select a device and allow microphone access.';
+        } catch (err) {
+          statusDiv.innerText = `Error loading devices: ${err.name}. Please allow microphone access.`;
+          startBtn.disabled = true;
+          console.error('Device error:', err);
+        }
+      }
+
+      // Profanity filter
+      const PROFANITY_LIST = [
+        'fuck', 'shit', 'bitch', 'asshole', 'dick', 'piss', 'cunt', 'cock',
+        'pussy', 'whore', 'slut', 'crap', 'damn', 'dick', 'fag', 'faggot',
+        'bastard', 'dickhead', 'prick', 'twat', 'wanker', 'bollocks', 'arse',
+        'arsehole', 'bint', 'bollox', 'bugger', 'bullshit', 'feck', 'minge',
+        'munter', 'pissed', 'prick', 'prickteaser', 'pussy', 'shit', 'shitbag',
+        'shitfaced', 'shithouse', 'shitter', 'shitty', 'slag', 'slapper', 'slut',
+        'tits', 'titties', 'titty', 'tosser', 'turd', 'twat', 'wank', 'wanker',
+        'wankstain', 'whore', 'whorebag', 'whoreface'
+      ];
+
+      function censorText(text) {
+        if (!text) return text;
+        const tokens = text.split(/(\s+)/);
+        return tokens.map(token => {
+          if (/^\s+$/.test(token)) return token;
+          const lowerToken = token.toLowerCase();
+          const isProfane = PROFANITY_LIST.some(profanity => 
+            lowerToken.includes(profanity)
+          );
+          return isProfane ? ' '.repeat(token.length) : token;
+        }).join('');
+      }
+
+      // Process words for display
+      function processWords() {
+        if (wordIndex >= currentWords.length) {
+          isBuilding = false;
+          clearInterval(buildInterval);
+          buildInterval = null;
+          return;
+        }
+
+        const word = currentWords[wordIndex];
+        let tempLine = captionLines[2] ? captionLines[2] + ' ' + word : word;
+
+        if (tempLine.length > maxLineLength) {
+          // Move lines up
+          lineHistory.push(captionLines[0]);
+          captionLines[0] = captionLines[1];
+          captionLines[1] = captionLines[2];
+          captionLines[2] = word;
+        } else {
+          captionLines[2] = tempLine;
+        }
+
+        updateDisplay();
+        wordIndex++;
+      }
+
+      // Update the visual display
+      function updateDisplay() {
+        transcriptDiv.innerHTML = '';
+        for (let i = 0; i < maxLines; i++) {
+          const p = document.createElement('p');
+          p.textContent = captionLines[i] || ' ';
+          p.style.minHeight = '1.6em';
+          p.style.opacity = captionLines[i] ? '0.9' : '0.3';
+          p.style.fontStyle = i === 2 && captionLines[i] ? 'italic' : 'normal';
+          transcriptDiv.appendChild(p);
+        }
+      }
+
+      // Process new text from speech recognition
+      function processNewText(text, isFinal) {
+        if (!text.trim()) return;
+        const cleanText = censorText(text.trim());
+        if (cleanText === lastProcessedText) return;
+        lastProcessedText = cleanText;
+
+        if (isFinal) {
+          currentWords = cleanText.split(/\s+/).filter(w => w.trim().length > 0);
+          wordIndex = 0;
+          if (!isBuilding) {
+            isBuilding = true;
+            if (buildInterval) clearInterval(buildInterval);
+            buildInterval = setInterval(processWords, 150);
+          }
+        } else if (!isBuilding) {
+          captionLines[2] = cleanText;
+          updateDisplay();
+        }
+      }
+
+      // Update captions
+      function updateCaptions(newText, isFinal) {
+        if (!newText.trim()) return;
+        processNewText(newText, isFinal);
+      }
+
+      // Start transcription
+      async function startTranscription() {
+        if (!deviceSelect.value) {
+          statusDiv.innerText = 'Please select an audio device.';
+          return;
+        }
+        if (recognition) {
+          try {
+            recognition.stop();
+          } catch (e) {}
+          recognition = null;
+        }
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: { 
+              deviceId: deviceSelect.value ? { exact: deviceSelect.value } : undefined,
+              noiseSuppression: false,
+              echoCancellation: false
+            }
+          });
+          recognition = createRecognition();
+          recognition.onresult = event => {
+            const result = event.results[event.results.length - 1];
+            const text = result[0].transcript;
+            if (result.isFinal) {
+              updateCaptions(ensurePunctuation(text.trim()), true);
+            } else {
+              if (!isBuilding) {
+                updateCaptions(text.trim(), false);
+              }
+            }
+          };
+          recognition.onend = () => {
+            if (startBtn.disabled) {
+              setTimeout(() => {
+                if (recognition && startBtn.disabled) {
+                  try {
+                    recognition.start();
+                  } catch (err) {
+                    console.error('Error restarting recognition:', err);
+                    statusDiv.innerHTML = `
+                      <div style="color: #d9534f; margin-bottom: 10px;">
+                        Error restarting speech recognition. Please refresh the page.
+                      </div>
+                    `;
+                    stopTranscription();
+                  }
+                }
+              }, 100);
+            }
+          };
+          recognition.start();
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          statusDiv.innerHTML = '<div style="color: #5cb85c;">Listening... Speak now.</div>';
+          captionLines = ['', '', ''];
+          lineHistory = [];
+          transcriptDiv.innerHTML = '';
+        } catch (err) {
+          console.error('Error starting transcription:', err);
+          statusDiv.innerHTML = `
+            <div style="color: #d9534f; margin-bottom: 10px;">
+              <strong>Error:</strong> ${err.message || 'Failed to access microphone'}
+            </div>
+            <button id="retryBtn" style="padding: 8px 16px; background: #5cb85c; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 10px;">
+              Try Again
+            </button>
+          `;
+          document.getElementById('retryBtn')?.addEventListener('click', startTranscription);
+          stopTranscription();
+        }
+      }
+
+      // Stop transcription
+      function stopTranscription() {
+        if (recognition) {
+          recognition.stop();
+          recognition = null;
+        }
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          stream = null;
+        }
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        statusDiv.innerText = '';
+        updateCaptions('Transcription stopped.', true);
+      }
+
+      // Event listeners
+      startBtn.addEventListener('click', startTranscription);
+      stopBtn.addEventListener('click', stopTranscription);
+      navigator.mediaDevices.addEventListener('devicechange', loadDevices);
+
+      // Add punctuation
+      function ensurePunctuation(text) {
+        if (!text) return text;
+        const lastChar = text.trim().slice(-1);
+        if (!['.', '!', '?'].includes(lastChar)) {
+          return text + '.';
+        }
+        return text;
+      }
+
+      // Initialize
+      loadDevices();
+    })();
+  </script>
+</body>
+</html>
