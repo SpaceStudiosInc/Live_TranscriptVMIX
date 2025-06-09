@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Audio to Text Captioner</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        #caption-window {
+            background-color: #000;
+            color: #fff;
+            padding: 20px;
+            height: 300px;
+            overflow-y: auto;
+            font-size: 24px;
+            line-height: 1.5;
+            border: 2px solid #333;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        #controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin-right: 10px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #status {
+            color: red;
+            font-weight: bold;
+        }
+        select {
+            padding: 8px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Audio to Text Captioner</h1>
+    <div id="controls">
+        <label for="audio-input">Select Audio Input:</label>
+        <select id="audio-input">
+            <option value="">-- Select a device --</option>
+        </select>
+        <p id="status">Microphone access is required. Please allow access when prompted.</p>
+        <button id="start-btn">Start Transcription</button>
+        <button id="stop-btn" disabled>Stop Transcription</button>
+        <button id="clear-btn">Clear Captions</button>
+    </div>
+    <div id="caption-window"></div>
+
+    <script>
+        let recognition;
+        const captionWindow = document.getElementById('caption-window');
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const status = document.getElementById('status');
+
+        // Initialize Web Speech API
+        function initSpeechRecognition() {
+            if (!('webkitSpeechRecognition' in window)) {
+                status.textContent = 'Error: Web Speech API not supported in this browser. Use Chrome or Edge.';
+                return;
+            }
+            recognition = new webkitSpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onresult = (event) => {
+                let interim = '';
+                let final = '';
+                for (let i = 0; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        final += transcript + '\n';
+                    } else {
+                        interim += transcript;
+                    }
+                }
+                captionWindow.textContent = final + interim;
+                captionWindow.scrollTop = captionWindow.scrollHeight; // Auto-scroll
+            };
+
+            recognition.onerror = (event) => {
+                status.textContent = `Speech recognition error: ${event.error}`;
+                if (event.error === 'service-not-allowed') {
+                    status.textContent = 'Error: Microphone access denied. Please allow microphone access.';
+                }
+            };
+
+            recognition.onend = () => {
+                if (startBtn.disabled) {
+                    recognition.start(); // Restart for continuous transcription
+                }
+            };
+        }
+
+        // Populate audio devices
+        async function populateAudioDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const audioInput = document.getElementById('audio-input');
+                audioInput.innerHTML = '<option value="">-- Select a device --</option>';
+                devices.forEach(device => {
+                    if (device.kind === 'audioinput') {
+                        const option = document.createElement('option');
+                        option.value = device.deviceId;
+                        option.text = device.label || `Microphone ${audioInput.length + 1}`;
+                        audioInput.appendChild(option);
+                    }
+                });
+            } catch (err) {
+                status.textContent = 'Error accessing audio devices: ' + err.message;
+            }
+        }
+
+        // Request microphone permission
+        async function requestMicPermission() {
+            try {
+                // First try to get a list of devices to trigger permission
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                
+                // If we have device labels, we have permission
+                const hasPermission = devices.some(device => 
+                    device.kind === 'audioinput' && device.label
+                );
+                
+                if (!hasPermission) {
+                    // If no permission, request it
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    // Stop all tracks to release the microphone
+                    stream.getTracks().forEach(track => track.stop());
+                    // Refresh devices
+                    await populateAudioDevices();
+                } else {
+                    // We already have permission
+                    await populateAudioDevices();
+                }
+                
+                status.textContent = 'Microphone ready. Select your device and click Start.';
+                status.style.color = 'green';
+                
+            } catch (err) {
+                console.error('Microphone error:', err);
+                let errorMessage = 'Could not access microphone. ';
+                
+                if (err.name === 'NotAllowedError') {
+                    errorMessage += 'Please allow microphone access and refresh the page.';
+                } else {
+                    errorMessage += `Error: ${err.name} - ${err.message}`;
+                }
+                
+                status.textContent = errorMessage;
+                status.style.color = 'red';
+                
+                // Add a refresh button
+                const refreshBtn = document.createElement('button');
+                refreshBtn.textContent = 'Click here after allowing access';
+                refreshBtn.style.marginTop = '10px';
+                refreshBtn.style.padding = '5px 10px';
+                refreshBtn.onclick = () => window.location.reload();
+                status.appendChild(document.createElement('br'));
+                status.appendChild(refreshBtn);
+            }
+        }
+
+        // Event listeners
+        startBtn.addEventListener('click', () => {
+            if (!recognition) {
+                status.textContent = 'Speech recognition not initialized.';
+                return;
+            }
+            recognition.start();
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            status.textContent = 'Transcribing...';
+        });
+
+        stopBtn.addEventListener('click', () => {
+            recognition.stop();
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            status.textContent = 'Transcription stopped.';
+        });
+
+        clearBtn.addEventListener('click', () => {
+            captionWindow.textContent = '';
+            status.textContent = 'Captions cleared.';
+        });
+
+        // Initialize
+        requestMicPermission();
+        initSpeechRecognition();
+    </script>
+</body>
+</html>
