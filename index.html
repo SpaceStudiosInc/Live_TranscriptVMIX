@@ -98,6 +98,7 @@
       flex-wrap: wrap;
       margin-bottom: 6px;
       width: 100%;
+      justify-content: flex-start;
     }
     #transcript .word {
       display: inline-block;
@@ -105,13 +106,14 @@
       opacity: 1;
       cursor: pointer;
       transition: background-color 0.2s, opacity 0.2s;
+      white-space: nowrap;
     }
     #transcript .word:hover {
       background-color: rgba(255,255,255,0.1);
       border-radius: 3px;
     }
     #transcript .interim {
-      opacity: 0.6; /* Visual cue for interim words */
+      opacity: 0.6;
     }
     #transcript .low-confidence {
       color: #ffcc00;
@@ -177,16 +179,14 @@
       let stream = null;
       let isActive = false;
       let finalTranscript = '';
-      let processedTranscripts = new Set(); // Track processed final transcripts
-      let interimWords = []; // Track current interim words
-      let interimTimeout = null; // Debounce interim updates
+      let processedTranscripts = new Set();
+      let interimWords = [];
+      let interimTimeout = null;
       
-      // Optimized settings
-      const maxLineLength = 75;
-      const maxLines = 4;
-      const interimDebounceMs = 100; // Debounce interim updates
+      const maxLineLength = 100; // Increased to allow more words per line
+      const maxLines = 2; // Reduced from 4 to 2 lines of history
+      const interimDebounceMs = 100;
       
-      // Expanded vocabulary for better accuracy
       const commonWords = new Set([
         'the', 'and', 'for', 'are', 'may', 'but', 'you', 'all', 'can', 'had',
         'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his',
@@ -198,7 +198,17 @@
         'time', 'come', 'could', 'state', 'with', 'also', 'back', 'over'
       ]);
 
-      // Check browser compatibility
+      // Profanity filter dictionary
+      const profanityFilter = new Set([
+        'fuck', 'shit', 'damn', 'dammit', 'ass', 'asshole', 'bitch', 'bastard',
+        'cunt', 'dick', 'prick', 'piss', 'pussy', 'cock', 'fucker', 'motherfucker',
+        'shithead', 'douche', 'douchebag', 'crap', 'bullshit', 'fucking', 'goddamn',
+        'arse', 'bollocks', 'bugger', 'wanker', 'sod', 'twat', 'knob', 'shite',
+        'arsehole', 'dickhead', 'pissed', 'son of a bitch', 'faggot', 'nigger',
+        'chink', 'spic', 'kike', 'retard', 'slut', 'whore', 'hoe', 'skank',
+        'cum', 'jizz', 'tits', 'boobs', 'fag', 'dyke', 'queer'
+      ]);
+
       if (!window.isSecureContext) {
         showError('Secure connection required. Use HTTPS or localhost.');
         startBtn.disabled = true;
@@ -221,9 +231,9 @@
       function initSpeechRecognition() {
         const rec = new SpeechRecognition();
         rec.continuous = true;
-        rec.interimResults = true; // Enable word-by-word updates
+        rec.interimResults = true;
         rec.lang = languageSelect.value;
-        rec.maxAlternatives = 5; // Increased for better accuracy
+        rec.maxAlternatives = 5;
 
         rec.onstart = () => {
           updateStatus('Active', '#28a745');
@@ -234,7 +244,6 @@
           let interimTranscript = '';
           let finalText = '';
           
-          // Process results
           for (let i = event.resultIndex; i < event.results.length; i++) {
             const result = event.results[i];
             const bestResult = getBestResult(result);
@@ -250,14 +259,11 @@
             }
           }
 
-          // Debounce interim results to reduce flicker
           if (interimTimeout) clearTimeout(interimTimeout);
           interimTimeout = setTimeout(() => {
-            // Process interim results
             if (interimTranscript.trim()) {
               processInterimResult(interimTranscript.trim());
             }
-            // Process final results
             if (finalText.trim()) {
               finalTranscript += finalText;
               processFinalResult(finalText.trim());
@@ -266,7 +272,7 @@
         };
 
         rec.onerror = (event) => {
-          console.error('Recognition error:',event.error);
+          console.error('Recognition error:', event.error);
           if (event.error === 'no-speech') {
             return;
           }
@@ -275,7 +281,7 @@
             'audio-capture': 'No microphone detected. Please connect an audio input device.',
             'network': 'Network error. Please check your internet connection.'
           };
-          showError(errorMessages[event.error] || `Error: ${errorMessages[event.error]}`);
+          showError(errorMessages[event.error] || `Error: ${event.error}`);
           stopCapturing();
         };
 
@@ -310,7 +316,7 @@
           const confidence = alternative.confidence || 0;
           const transcript = alternative.transcript.toLowerCase();
           const words = transcript.split(/\s+/);
-          const commonWordBonus = words.filter(word => commonWords.has(word)).length * 0.05; // Reduced bonus for balance
+          const commonWordBonus = words.filter(word => commonWords.has(word)).length * 0.05;
           const adjustedScore = confidence + commonWordBonus;
 
           if (adjustedScore > bestScore) {
@@ -360,7 +366,7 @@
           const message = error.name === 'NotAllowedError' 
             ? 'Microphone access denied. Please allow microphone access and try again.'
             : 'Failed to access audio devices.';
-            showError(message);
+          showError(message);
           startBtn.disabled = true;
         }
       }
@@ -371,10 +377,19 @@
         text = text.trim();
         if (!text) return '';
 
-        // Enhanced corrections
+        // Profanity filtering
+        let words = text.split(/\s+/);
+        words = words.map(word => {
+          const cleanWord = word.replace(/[.,!?]/g, '').toLowerCase();
+          return profanityFilter.has(cleanWord) ? '' : word;
+        });
+        text = words.filter(w => w).join(' ');
+
+        // Capitalize first letter
         text = text.replace(/^./, c => c.toUpperCase());
         text = text.replace(/\.\s+./g, m => m.toUpperCase());
 
+        // Text corrections
         const corrections = {
           ' i ': ' I ',
           ' im ': ' I\'m ',
@@ -400,7 +415,7 @@
         };
 
         Object.entries(corrections).forEach(([wrong, right]) => {
-          const regex = new RegExp(wrong.replace(/'/g, '\''), 'gi');
+          const regex = new RegExp(`\\b${wrong.replace(/'/g, '\'')}\\b`, 'gi');
           text = text.replace(regex, right);
         });
 
@@ -411,16 +426,13 @@
         const words = text.split(/\s+/).filter(w => w);
         if (!words.length) return;
 
-        // Remove previous interim words
         interimWords.forEach(wordSpan => wordSpan.remove());
         interimWords = [];
 
-        // Display new interim words
         displayWords(words, true);
       }
 
       function processFinalResult(text) {
-        // Remove interim words
         interimWords.forEach(wordSpan => wordSpan.remove());
         interimWords = [];
 
@@ -431,21 +443,42 @@
       }
 
       function displayWords(words, isInterim) {
-        let currentLine = transcriptDiv.querySelector('.line:last-child');
-        if (!currentLine || currentLine.textContent.includes('Select an audio input')) {
+        // Remove any existing interim words
+        interimWords.forEach(wordSpan => wordSpan.remove());
+        interimWords = [];
+
+        // Clear the transcript if it contains the initial message
+        if (transcriptDiv.textContent.includes('Select an audio input')) {
           transcriptDiv.innerHTML = '';
+        }
+
+        // Get or create the current line
+        let currentLine = transcriptDiv.querySelector('.line:last-child');
+        if (!currentLine) {
+          currentLine = createNewLine();
+        }
+
+        // Remove the current line if it's empty (except for interim words which we just removed)
+        if (currentLine.textContent.trim() === '') {
+          currentLine.remove();
           currentLine = createNewLine();
         }
 
         let lineLength = getCurrentLineLength(currentLine);
+        let hasAddedWords = false;
 
+        // Process each word
         words.forEach(word => {
+          if (!word) return; // Skip empty words
+          
           const wordLength = word.length + 1;
 
+          // Start a new line if needed
           if (lineLength + wordLength > maxLineLength) {
             currentLine = createNewLine();
             lineLength = 0;
           }
+
 
           const span = createWordSpan(word);
           if (isInterim) {
@@ -454,13 +487,22 @@
           }
           currentLine.appendChild(span);
           lineLength += wordLength;
+          hasAddedWords = true;
         });
 
-        // Remove excess lines
-        const lines = transcriptDiv.querySelectorAll('.line');
+        // Only keep the most recent lines
+        const lines = Array.from(transcriptDiv.querySelectorAll('.line'));
         if (lines.length > maxLines) {
-          lines[0].remove();
+          const linesToRemove = lines.slice(0, lines.length - maxLines);
+          linesToRemove.forEach(line => line.remove());
         }
+
+        // Remove any empty lines that might be left
+        transcriptDiv.querySelectorAll('.line').forEach(line => {
+          if (line.textContent.trim() === '') {
+            line.remove();
+          }
+        });
 
         transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
         cleanupProcessedTranscripts();
@@ -504,44 +546,44 @@
         if (!deviceSelect.value) {
           showError('Please select an audio input device.');
           return;
-        }
-
-        try {
-          stopCapturing();
-
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              deviceId: { exact: deviceSelect.value },
-              noiseSuppression: true,
-              echoCancellation: true,
-              autoGainControl: true,
-              sampleRate: 48000 // Higher sample rate for clarity
-            }
-          });
-
-          recognition = initSpeechRecognition();
-          recognition.start();
-          
-          isActive = true;
-          startBtn.disabled = true;
-          stopBtn.disabled = false;
-          
-          transcriptDiv.innerHTML = '';
-          finalTranscript = '';
-          processedTranscripts.clear();
-          interimWords = [];
-          
-        } catch (error) {
-          console.error('Error starting capture:', error);
-          const errorMessages = {
-            'NotAllowedError': 'Microphone access denied.',
-            'NotFoundError': 'Selected audio device not found.',
-            'OverconstrainedError': 'Selected audio device not available.'
-          };
-          showError(errorMessages[error.name] || `Error: ${error.message}`);
-          stopCapturing();
-        }
       }
+
+      try {
+        stopCapturing();
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: { exact: deviceSelect.value },
+            noiseSuppression: true,
+            echoCancellation: true,
+            autoGainControl: true,
+            sampleRate: 48000
+          }
+        });
+
+        recognition = initSpeechRecognition();
+        recognition.start();
+        
+        isActive = true;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        
+        transcriptDiv.innerHTML = '';
+        finalTranscript = '';
+        processedTranscripts.clear();
+        interimWords = [];
+        
+      } catch (error) {
+        console.error('Error starting capture:', error);
+        const errorMessages = {
+          'NotAllowedError': 'Microphone access denied.',
+          'NotFoundError': 'Selected audio device not found.',
+          'OverconstrainedError': 'Selected audio device not available.'
+        };
+        showError(errorMessages[error.name] || `Error: ${error.message}`);
+        stopCapturing();
+      }
+    }
 
       function stopCapturing() {
         isActive = false;
@@ -591,18 +633,17 @@
       startBtn.addEventListener('click', startCapturing);
       stopBtn.addEventListener('click', stopCapturing);
       
-      languageSelect.addEventListener('change', () => {
+      if (languageSelect) languageSelect.onchange = () => {
         if (isActive) {
           stopCapturing();
           setTimeout(startCapturing, 100);
         }
-      });
+      }
 
       navigator.mediaDevices.addEventListener('devicechange', loadAudioDevices);
 
       // Initialize
       loadAudioDevices();
-      
     })();
   </script>
 </body>
