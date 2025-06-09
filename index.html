@@ -6,6 +6,16 @@
   <title>Live TV Captions</title>
   <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAmElEQVRYR+2WQQqAMAwExyT+/zO7gQ7I4NhbIAbqE/g4wMNAYgBKBZTybgAA7r5UACgVUMq7AQC4+1IBoFRAKe8GAODuSwWAUgGlvBsAgLsvFQCKBVTybgAA7r5UACgVUMq7AQC4+1IBoFRAKe8GAODuSwWAUgGlvBsAgLsvFQCKBVTybgAA7r5UACgVUMq7AQC4+1IBoFRANc0B4E3h1rUAAAAASUVORK5CYII=">
   <style>
+    .disclaimer-banner {
+      background-color: #000000;
+      color: #ffffff;
+      text-align: center;
+      padding: 5px 0;
+      font-size: 14px;
+      font-weight: bold;
+      position: relative;
+      z-index: 1000;
+    }
     * {
       margin: 0;
       padding: 0;
@@ -30,26 +40,26 @@
       box-shadow: 0 2px 5px rgba(0,0,0,0.5);
     }
     .header h1 {
-      font-size: 18px;
+      font-size: 16px;
       margin-right: 10px;
     }
     .controls {
       display: flex;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
-      flex-grow: 1;
+      flex-grow: wrap;
     }
     select, button {
       padding: 8px;
       border-radius: 4px;
       border: none;
-      font-size: 14px;
+      font-size: 12px;
       cursor: pointer;
     }
     #deviceSelect, #languageSelect {
       background: #444;
       color: #fff;
-      min-width: 150px;
+      min-width: 120px;
     }
     button {
       background: #007bff;
@@ -63,21 +73,21 @@
       cursor: not-allowed;
     }
     #status {
-      font-size: 14px;
+      font-size: 12px;
       margin-left: auto;
       color: #ccc;
     }
     #transcript {
       flex-grow: 1;
       background: rgba(0,0,0,0.8);
-      padding: 20px;
+      padding: 15px;
       overflow-y: auto;
-      font-size: 24px;
-      line-height: 1.6;
+      font-size: 20px;
+      line-height: 1.5;
       display: flex;
       flex-direction: column;
       align-items: flex-start;
-      min-height: 200px;
+      min-height: 150px;
       scroll-behavior: smooth;
     }
     #transcript .line {
@@ -87,9 +97,9 @@
     }
     #transcript .word {
       display: inline-block;
-      margin-right: 8px;
+      margin-right: 6px;
       opacity: 0.9;
-      transition: opacity 0.5s;
+      transition: opacity 0.3s;
       cursor: pointer;
     }
     #transcript .low-confidence {
@@ -111,12 +121,15 @@
         width: 100%;
       }
       #transcript {
-        font-size: 18px;
+        font-size: 16px;
       }
     }
   </style>
 </head>
 <body>
+  <div class="disclaimer-banner">
+    Disclaimer: Automated transcription may contain inaccuracies. Words shown may be incorrect or inaccurate.
+  </div>
   <div class="header">
     <h1>Live TV Captions</h1>
     <div class="controls">
@@ -152,23 +165,34 @@
       let isTranscribing = false;
       let isRecognitionActive = false;
       let lastWords = [];
+      let pendingWords = []; // Buffer for overlap during restarts
       let userCorrections = JSON.parse(localStorage.getItem('corrections')) || {};
       let restartInterval = null;
-      const wordDelay = 100; // Delay for word-by-word display
-      const maxLineLength = 80; // Increased character limit per line
+      const wordDelay = 0; // No delay for instant word display
+      const maxLineLength = 80; // Character limit per line
       const maxLines = 4; // Maximum number of lines to display
-      const restartIntervalTime = 3000; // Restart recognition every 3 seconds
+      const restartIntervalTime = 2000; // Restart every 2 seconds for balance
       const profanityList = ['ass', 'bitch', 'fuck', 'shit', 'damn', 'cunt', 'dick', 'pussy', 'whore', 'fag', 'slut', 'cock'];
       const domainWords = [
-        'broadcast', 'anchor', 'telecast', 'newsroom', 'reporter',
-        'correspondent', 'studio', 'live', 'segment', 'coverage',
-        'headline', 'breaking', 'weather', 'sports', 'analysis'
+        'broadcast', 'anchor', 'telecast', 'newsroom', 'reporter', 'correspondent',
+        'studio', 'live', 'segment', 'coverage', 'headline', 'breaking', 'weather',
+        'sports', 'analysis', 'television', 'presenter', 'bulletin', 'newscast',
+        'journalist', 'commentator', 'interview', 'report', 'update', 'politics',
+        'debate', 'channel', 'network', 'program', 'show', 'event'
       ];
       const commonCorrections = {
         'there': 'their',
+        'their': 'they\'re',
         'weather': 'whether',
         'to': 'too',
-        'your': "you're"
+        'two': 'too',
+        'your': 'you\'re',
+        'then': 'than',
+        'its': 'it\'s',
+        'affect': 'effect',
+        'accept': 'except',
+        'here': 'hear',
+        'where': 'wear'
       };
 
       // Check secure context
@@ -197,7 +221,7 @@
       function initRecognition() {
         const rec = new SpeechRecognition();
         rec.continuous = true;
-        rec.interimResults = false; // Only show final results
+        rec.interimResults = false; // Only final results
         rec.lang = languageSelect.value;
         rec.maxAlternatives = 1;
 
@@ -295,7 +319,7 @@
         if (!text) return text;
         let result = text;
         profanityList.forEach(word => {
-          const regex = new RegExp('\\b${word}\\b', 'gi');
+          const regex = new RegExp(`\\b${word}\\b`, 'gi');
           result = result.replace(regex, '*'.repeat(word.length));
         });
         return result;
@@ -303,17 +327,29 @@
 
       // Domain-specific word boosting
       function boostDomainWords(text) {
+        if (!text) return text;
         return text.split(/\s+/).map(word => {
-          const lowerWord = word.toLowerCase();
-          const match = domainWords.find(dw => dw.toLowerCase().startsWith(lowerWord));
-          return match || word;
+          if (word.length < 3) return word;
+          const lowerWord = word.toLowerCase().replace(/[^a-z]/g, '');
+          if (!lowerWord) return word;
+          const matches = domainWords.filter(dw => {
+            const lowerDW = dw.toLowerCase();
+            return lowerDW.startsWith(lowerWord) || lowerWord.startsWith(lowerDW) ||
+                   (Math.abs(lowerWord.length - lowerDW.length) <= 2 && lowerWord[0] === lowerDW[0]);
+          });
+          return matches.length === 1 && matches[0].length >= 3 ? matches[0] : word;
         }).join(' ');
       }
 
       // User and common corrections
       function correctText(text) {
+        if (!text) return text;
         const allCorrections = { ...commonCorrections, ...userCorrections };
-        return text.split(/\s+/).map(word => allCorrections[word.toLowerCase()] || word).join(' ');
+        return text.split(/\s+/).map(word => {
+          const trimmed = word.trim();
+          const corrected = allCorrections[trimmed.toLowerCase()];
+          return corrected !== undefined ? corrected : word;
+        }).join(' ');
       }
 
       function saveCorrection(oldWord, newWord) {
@@ -321,30 +357,43 @@
         localStorage.setItem('corrections', JSON.stringify(userCorrections));
       }
 
-      // Basic grammar correction
+      // Grammar correction
       function correctGrammar(text) {
         if (!text) return text;
+        text = text.trim();
+        if (text.length === 0) return text;
         text = text.charAt(0).toUpperCase() + text.slice(1);
-        if (!text.match(/[.!?]$/)) text += '.';
+        if (!text.match(/[.!?]$/)) text += ' ';
+        text = text.replace(/\s+/g, ' '); // Normalize spaces
         return text;
       }
 
-      // Process text word by word
+      // Normalize text for comparison
+      function normalizeText(text) {
+        return text.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()\[\]]/g, '');
+      }
+
+      // Process text
       function processText(text, confidence) {
         if (!text) return;
         text = correctGrammar(correctText(censorText(boostDomainWords(text))));
         const words = text.split(/\s+/).filter(w => w.trim());
 
-        // Find new words by comparing with last displayed words
+        // Combine with pending words from previous restart
+        const allWords = [...pendingWords, ...words];
+        pendingWords = words.slice(-2); // Keep last 2 words for next overlap
+
         const newWords = [];
-        for (let i = 0; i < words.length; i++) {
-          if (i >= lastWords.length || words[i] !== lastWords[i]) {
-            newWords.push({ word: words[i], confidence });
+        for (let i = 0; i < allWords.length; i++) {
+          if (i >= lastWords.length || normalizeText(allWords[i]) !== normalizeText(lastWords[i])) {
+            newWords.push({ word: allWords[i], confidence });
           }
         }
 
-        updateDisplay(newWords);
-        lastWords = words.slice();
+        if (newWords.length > 0) {
+          updateDisplay(newWords);
+        }
+        lastWords = allWords.slice();
       }
 
       // Update display with new words
@@ -361,39 +410,36 @@
           .join(' ');
         let charCount = currentText.length + (currentText ? 1 : 0);
 
-        words.forEach((item, index) => {
-          setTimeout(() => {
-            const wordText = item.word;
-            const wordLength = wordText.length + 1;
+        words.forEach((item) => {
+          const wordText = item.word;
+          const wordLength = wordText.length + 1;
 
-            if (charCount + wordLength > maxLineLength) {
-              currentLine = document.createElement('div');
-              currentLine.className = 'line';
-              transcriptDiv.appendChild(currentLine);
-              charCount = 0;
+          if (charCount + wordLength > maxLineLength) {
+            currentLine = document.createElement('div');
+            currentLine.className = 'line';
+            transcriptDiv.appendChild(currentLine);
+            charCount = 0;
 
-              // Remove oldest line if there are 5 or more lines
-              const lines = transcriptDiv.querySelectorAll('.line');
-              if (lines.length > maxLines) {
-                transcriptDiv.removeChild(lines[0]);
-              }
+            const lines = transcriptDiv.querySelectorAll('.line');
+            if (lines.length > maxLines) {
+              transcriptDiv.removeChild(lines[0]);
             }
+          }
 
-            const span = document.createElement('span');
-            span.className = `word ${item.confidence < 0.7 ? 'low-confidence' : ''}`;
-            span.textContent = wordText + ' ';
-            span.addEventListener('click', () => {
-              const newWord = prompt('Correct this word:', wordText);
-              if (newWord && newWord !== wordText) {
-                saveCorrection(wordText, newWord);
-                span.textContent = newWord + ' ';
-              }
-            });
-            currentLine.appendChild(span);
-            charCount += wordLength;
+          const span = document.createElement('span');
+          span.className = `word ${item.confidence < 0.7 ? 'low-confidence' : ''}`;
+          span.textContent = wordText + ' ';
+          span.addEventListener('click', () => {
+            const newWord = prompt('Correct this word:', wordText);
+            if (newWord && newWord !== wordText) {
+              saveCorrection(wordText, newWord);
+              span.textContent = newWord + ' ';
+            }
+          });
+          currentLine.appendChild(span);
+          charCount += wordLength;
 
-            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-          }, index * wordDelay);
+          transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
         });
       }
 
@@ -424,8 +470,9 @@
           stopBtn.disabled = false;
           transcriptDiv.innerHTML = '';
           lastWords = [];
+          pendingWords = [];
 
-          // Force restart every 3 seconds for small final result batches
+          // Force restart every 2 seconds
           restartInterval = setInterval(() => {
             if (isTranscribing && isRecognitionActive && recognition) {
               try {
